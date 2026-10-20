@@ -243,18 +243,26 @@ Things to know:
   backend's `SSL_CERT_DIR`. The backend therefore sends the certificates from
   the directories you added to `SSL_CERT_DIR` (the system directories
   `/etc/ssl/certs` and `/etc/pki/tls/certs` are left out) to every daemon with
-  the workspace repositories. The daemon writes them, after its machine's
-  system CA bundle, into a bundle file of its own and points git at that file
-  for its own clone and fetch and for the git commands agents run in their
-  checkouts; the system trust store itself is not changed. Nothing needs to be installed on the
-  daemon's machine. Things to know about it:
-  - Daemons pick up an added, replaced, or removed CA the next time they
-    refresh the workspace repositories, which happens before every checkout;
-    they do not need a restart. The backend still does.
-  - The daemon's git trusts the CA for every host it talks to, not only the
-    one that needs it.
-  - A `GIT_SSL_CAINFO`, or an `http.<url>.sslCAInfo` for the host, configured
-    on the daemon's machine still takes precedence.
+  the workspace repositories. The daemon adds them to the trust git already
+  has on its machine and records the result in each workspace repository's
+  git config, which its own clone and fetch and the git commands agents run in
+  their checkouts all read. Nothing needs to be installed on the daemon's
+  machine. Things to know about it:
+  - The trust git already has is kept. If the daemon's machine sets a general
+    `http.sslCAInfo` in its system or global git config, the certificates in
+    that file are combined with the backend's; otherwise the system CA bundle
+    is. The daemon writes the combination to a file of its own and does not
+    change the system trust store or that git config.
+  - Narrower settings on the daemon's machine win and are not combined: an
+    `http.<url>.sslCAInfo` for a host, an `http.sslCAInfo` set in a
+    repository's own config, and `GIT_SSL_CAINFO`.
+  - Daemons pick up an added, replaced, or removed CA, and changes to the
+    machine's own trust, the next time they refresh the workspace
+    repositories, which happens before every checkout; they do not need a
+    restart. The backend still does. Checkouts created while a CA was
+    present keep working after it is removed.
+  - Within those repositories, git trusts the backend's CAs for every host,
+    not only the one that needs them.
   - Daemons on Windows do not apply it: Git for Windows verifies certificates
     against the Windows certificate store by default, so add the CA there.
 - **Only the trust problem is fixed.** An expired certificate, or one that does

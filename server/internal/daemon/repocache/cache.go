@@ -47,21 +47,12 @@ func gitEnv() []string {
 	}
 
 	idx := strconv.Itoa(existing)
-	env := append(base,
+	return append(base,
 		"GIT_TERMINAL_PROMPT=0",
+		"GIT_CONFIG_COUNT="+strconv.Itoa(existing+1),
 		"GIT_CONFIG_KEY_"+idx+"=safe.directory",
 		"GIT_CONFIG_VALUE_"+idx+"=*",
 	)
-	count := existing + 1
-	if bundle := currentCABundle(); bundle != "" {
-		caIdx := strconv.Itoa(count)
-		env = append(env,
-			"GIT_CONFIG_KEY_"+caIdx+"="+caBundleConfigKey,
-			"GIT_CONFIG_VALUE_"+caIdx+"="+bundle,
-		)
-		count++
-	}
-	return append(env, "GIT_CONFIG_COUNT="+strconv.Itoa(count))
 }
 
 var agentGitExcludePatterns = []string{
@@ -404,8 +395,6 @@ func (c *Cache) SyncContext(ctx context.Context, workspaceID string, repos []Rep
 				if firstErr == nil {
 					firstErr = err
 				}
-			} else {
-				c.configureRepoCABundleLogged(ctx, barePath)
 			}
 		}
 		repoLock.Unlock()
@@ -606,10 +595,16 @@ func gitCloneBare(url, dest string) error {
 }
 
 func gitCloneBareContext(ctx context.Context, url, dest string) error {
-	if out, err := runGitCombinedOutputContext(ctx, "clone", "--bare", url, dest); err != nil {
+	args := append(caCloneArgs(), "clone", "--bare", url, dest)
+	if out, err := runGitCombinedOutputContext(ctx, args...); err != nil {
 		// Clean up partial clone.
 		os.RemoveAll(dest)
 		return fmt.Errorf("git clone --bare: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	// Record the CA bundle before the refspec migration below fetches again.
+	if err := configureRepoCABundleContext(ctx, dest); err != nil {
+		os.RemoveAll(dest)
+		return err
 	}
 	// `git clone --bare` populates refs/heads/* as a snapshot and defaults to
 	// a mirror-style fetch refspec. Convert the bare repo to the standard
@@ -899,7 +894,6 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 		if err != nil {
 			return nil, fmt.Errorf("create isolated checkout: %w", err)
 		}
-		c.configureRepoCABundleLogged(ctx, worktreePath)
 
 		for _, pattern := range agentGitExcludePatterns {
 			_ = excludeFromGitContext(ctx, worktreePath, pattern)
@@ -1031,6 +1025,9 @@ func (c *Cache) createOrUpdateIsolatedCheckoutContext(ctx context.Context, bareP
 
 	if isIsolatedCheckoutContext(ctx, checkoutPath) {
 		if err := setIsolatedCheckoutOriginContext(ctx, checkoutPath, repoURL); err != nil {
+			return nil, err
+		}
+		if err := configureRepoCABundleContext(ctx, checkoutPath); err != nil {
 			return nil, err
 		}
 		// Idempotent, and required for a workdir that was first created while
@@ -1192,6 +1189,10 @@ func createIsolatedCheckoutContext(ctx context.Context, barePath, repoURL, check
 	}
 	if out, err := runGitCombinedOutputContext(ctx, "-C", checkoutPath, "remote", "add", "origin", repoURL); err != nil {
 		return "", fmt.Errorf("add origin remote: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	// Before the first checkout, which may lazily fetch from origin.
+	if err := configureRepoCABundleContext(ctx, checkoutPath); err != nil {
+		return "", err
 	}
 	if isPartialCloneContext(ctx, barePath) {
 		if err := configurePromisorRemoteContext(ctx, checkoutPath); err != nil {
